@@ -3,6 +3,7 @@ import sys
 import pygame
 import cv2
 import numpy as np
+# import mediapipe as mp
 
 WIDTH, HEIGHT = 800, 600
 WHITE = (255, 255, 255)
@@ -43,15 +44,30 @@ class AI:
     """Simple AI player that makes random choices."""
     def __init__(self):
         self.history = []
-        self.probs = [1/3, 1/3, 1/3] 
+        self.probs = np.array([1/3, 1/3, 1/3]) 
+        self.transition_matrix = np.ones(shape=(3,3)) / 3
+        self.trans_temps = np.array([[3],[3],[3]])
 
     def get_move(self):
-        return random.choices(MOVES, self.probs, k=1)[0]
+        probs = self.probs * self.transition_matrix[self.history[-1]] if len(self.history) > 0 else self.probs
+        result = random.choices([0,1,2], probs, k=1)[0]
+        return MOVES[result]
 
     def update_history(self, result):
+        tmp = self.probs * (len(self.history) + 3)
         self.history.append(result)
-        #TRAIN
+        tmp[(result + 1) % 3] += 1
+        self.probs = tmp / np.sum(tmp)
 
+        # update the transition matrix
+        if len(self.history) >= 2:
+            self.transition_matrix[self.history[-2]] *= self.trans_temps[self.history[-2]] 
+            self.transition_matrix[self.history[-2],(self.history[-1]+1)%3] += 1
+            self.trans_temps[self.history[-2]] += 1
+            self.transition_matrix[self.history[-2]] /= self.trans_temps[self.history[-2]]
+            print(self.transition_matrix)
+        #TRAIN
+   
 
 class Game:
     """Game logic, score tracking, and UI management."""
@@ -76,8 +92,7 @@ class Game:
         surface.fill(WHITE)
         self._draw_camera(surface)
         
-        self._draw_score(surface)
-        self._draw_result(surface)
+        self._draw_result_rect(surface) 
         if self.countdown_active:
             self._draw_countdown(surface)
         else:
@@ -104,13 +119,19 @@ class Game:
         for button in self.buttons:
             button.draw(surface, pygame.mouse.get_pos())
 
-    def _draw_score(self, surface):
+        
+    def _draw_result_rect(self, surface):
+        x = 50
+        y = 50
+        result_rect = pygame.Rect(x - 20, y - 20, 700, 100)
+        pygame.draw.rect(surface, DARK_GRAY, result_rect, border_radius=12)
         score = FONT.render(f"Score - You: {self.player_score} | AI: {self.ai_score}", True, BLACK)
-        surface.blit(score, (100, 200))
-
-    def _draw_result(self, surface):
         result = FONT.render(self.result_text, True, BLACK)
-        surface.blit(result, (100, 150))
+        
+        result = FONT.render(self.result_text, True, BLACK)
+        surface.blit(result, (x-5, y))
+        surface.blit(score, (x, y + 30))
+
 
     def _draw_countdown(self, surface):
         """Displays animated countdown before game starts."""
@@ -136,8 +157,9 @@ class Game:
     def _play_round(self, player_move):
         ai_move = self.ai.get_move()
         result = self._determine_winner(player_move, ai_move)
+        self.ai.update_history(MOVES.index(player_move))
+
         self.result_text = f"You: {player_move} | AI: {ai_move} → {result}"
-        self.ai.update_history(result)
         self.countdown_start = pygame.time.get_ticks()
         self.countdown_active = True
 
@@ -157,11 +179,43 @@ class Game:
             self.ai_score += 1
             return "AI Wins!"
 
+# mp_hands = mp.solutions.hands
+# hands = mp_hands.Hands(static_image_mode=False, max_num_hands=1)
+# mp_draw = mp.solutions.drawing_utils
 
-# --------------------- MAIN LOOP ---------------------
+def get_finger_states(hand_landmarks):
+    tips = [4, 8, 12, 16, 20]
+    pip_joints = [2, 6, 10, 14, 18]
+    finger_states = []
+
+    # Thumb: special case (check x instead of y)
+    if hand_landmarks.landmark[tips[0]].x < hand_landmarks.landmark[pip_joints[0]].x:
+        finger_states.append(1)
+    else:
+        finger_states.append(0)
+
+    # Other fingers: tip higher than joint → extended
+    for i in range(1, 5):
+        tip = hand_landmarks.landmark[tips[i]]
+        pip = hand_landmarks.landmark[pip_joints[i]]
+        finger_states.append(1 if tip.y < pip.y else 0)
+
+    return finger_states
+
+def classify_hand_gesture(finger_states):
+    if finger_states == [0, 0, 0, 0, 0]:
+        return "Rock"
+    elif finger_states == [1, 1, 1, 1, 1]:
+        return "Paper"
+    elif finger_states[1] and finger_states[2] and not any(finger_states[3:]):
+        return "Scissors"
+    else:
+        return "Unknown"
+
 
 def main():
     game = Game()
+    print('RUNNING')
     while True:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -176,4 +230,6 @@ def main():
         clock.tick(60)
 
 if __name__ == "__main__":
+    print('RUNNING')
+
     main()
