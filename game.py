@@ -44,27 +44,19 @@ class AI:
     """Simple AI player that makes random choices."""
     def __init__(self):
         self.history = []
-        self.probs = np.array([1/3, 1/3, 1/3]) 
-        self.transition_matrix = np.ones(shape=(3,3)) / 3
-        self.trans_temps = np.array([[3],[3],[3]])
+        self.transition_matrix = np.ones(shape=(3,3,3))
 
     def get_move(self):
-        probs = self.probs * self.transition_matrix[self.history[-1]] if len(self.history) > 0 else self.probs
+        probs = self.transition_matrix[self.history[-2],self.history[-1]]/ self.transition_matrix[self.history[-2],self.history[-1]].sum() if len(self.history) > 2 else np.array([1/3, 1/3, 1/3])
         result = random.choices([0,1,2], probs, k=1)[0]
         return MOVES[result]
 
     def update_history(self, result):
-        tmp = self.probs * (len(self.history) + 3)
         self.history.append(result)
-        tmp[(result + 1) % 3] += 1
-        self.probs = tmp / np.sum(tmp)
 
         # update the transition matrix
-        if len(self.history) >= 2:
-            self.transition_matrix[self.history[-2]] *= self.trans_temps[self.history[-2]] 
-            self.transition_matrix[self.history[-2],(self.history[-1]+1)%3] += 1
-            self.trans_temps[self.history[-2]] += 1
-            self.transition_matrix[self.history[-2]] /= self.trans_temps[self.history[-2]]
+        if len(self.history) > 2:
+            self.transition_matrix[self.history[-3],self.history[-2],(self.history[-1]+1)%3] += 1
             print(self.transition_matrix)
         #TRAIN
    
