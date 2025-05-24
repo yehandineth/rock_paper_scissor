@@ -3,9 +3,14 @@ import sys
 import pygame
 import cv2
 import numpy as np
-# import mediapipe as mp
+import mediapipe as mp
+import seaborn as sns
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+import io
 
-WIDTH, HEIGHT = 800, 600
+
+WIDTH, HEIGHT = 1280, 720
 WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
 GRAY = (180, 180, 180)
@@ -21,6 +26,58 @@ COUNTDOWN_FONT = pygame.font.SysFont("Arial", 72)
 clock = pygame.time.Clock()
 camera = cv2.VideoCapture(0)
 
+BaseOptions = mp.tasks.BaseOptions
+HandLandmarker = mp.tasks.vision.HandLandmarker
+HandLandmarkerOptions = mp.tasks.vision.HandLandmarkerOptions
+HandLandmarkerResult = mp.tasks.vision.HandLandmarkerResult
+VisionRunningMode = mp.tasks.vision.RunningMode
+gesture_result = {"gesture": "Unknown"}
+
+def gesture_callback(result: HandLandmarkerResult, output_image: mp.Image, timestamp_ms: int):
+    if result.hand_landmarks:
+        landmarks = result.hand_landmarks[0]
+        finger_states = get_finger_states(landmarks)
+        gesture_result["gesture"] = classify_hand_gesture(finger_states)
+    else:
+        gesture_result["gesture"] = "Unknown"
+
+def get_finger_states(landmarks):
+    tips = [4, 8, 12, 16, 20]
+    pip_joints = [2, 6, 10, 14, 18]
+    finger_states = []
+
+    # Thumb special case: compare x-coordinates
+    if landmarks[tips[0]].x < landmarks[pip_joints[0]].x:
+        finger_states.append(1)
+    else:
+        finger_states.append(0)
+
+    # Other fingers: compare y-coordinates
+    for i in range(1, 5):
+        finger_states.append(1 if landmarks[tips[i]].y < landmarks[pip_joints[i]].y else 0)
+
+    return finger_states
+
+def classify_hand_gesture(finger_states):
+    if finger_states == [0, 0, 0, 0, 0]:
+        return "Rock"
+    elif finger_states == [1, 1, 1, 1, 1]:
+        return "Paper"
+    elif finger_states == [0, 1, 1, 0, 0]:
+        return "Scissors"
+    else:
+        return "Unknown"
+
+options = HandLandmarkerOptions(
+    base_options=BaseOptions(model_asset_path='hand_landmarker.task'),
+    running_mode=VisionRunningMode.LIVE_STREAM,
+    result_callback=gesture_callback
+)
+
+landmarker = HandLandmarker.create_from_options(options)
+
+
+    
 
 class Button:
     """UI Button with position, label, and click detection."""
@@ -28,10 +85,11 @@ class Button:
         
         self.rect = pygame.Rect(x, y, 180, 60)
         self.text = text
+        self.Toggle = False
 
     def draw(self, surface,mouse_pos):
         is_hovered = self.rect.collidepoint(mouse_pos)
-        color = BLUE if is_hovered else GRAY
+        color = BLUE if (is_hovered or self.Toggle) else GRAY
         pygame.draw.rect(surface, color, self.rect, border_radius=12)
         label = FONT.render(self.text, True, BLACK)
         surface.blit(label, label.get_rect(center=self.rect.center))
@@ -64,15 +122,17 @@ class AI:
 class Game:
     """Game logic, score tracking, and UI management."""
     def __init__(self):
+        self.mode = 'PLAY'
         self.player_score = 0
         self.ai_score = 0
         self.result_text = ""
         self.ai = AI()
         self.buttons = [
-            Button(100, 450, "Rock"),
-            Button(300, 450, "Paper"),
-            Button(500, 450, "Scissors")
+            Button(100, 650, "Toggle Insights"),
+            # Button(500, 600, "Paper"),
+            Button(900, 650, "Toggle Video")
         ]
+        self.buttons[1].Toggle = True
 
         # Countdown settings
         self.countdown_active = True
@@ -83,29 +143,73 @@ class Game:
         """Main drawing function for a game frame."""
         surface.fill(WHITE)
         self._draw_camera(surface)
+        self._draw_buttons(surface)
         
-        self._draw_result_rect(surface) 
-        if self.countdown_active:
+        self._draw_result_rect(surface) if not self.buttons[0].Toggle else None
+        if self.countdown_active and not self.buttons[0].Toggle:
             self._draw_countdown(surface)
-        else:
-            self._draw_buttons(surface)
+        if self.countdown_active == False and gesture_result["gesture"] != "Unknown" and not self.buttons[0].Toggle:
+            self._play_round(gesture_result["gesture"])
+            gesture_result["gesture"] = "Unknown"
+        
+            
 
     def handle_click(self, pos):
         """Processes user click if countdown has finished."""
-        if self.countdown_active:
-            return
         for button in self.buttons:
             if button.is_clicked(pos):
-                self._play_round(button.text)
+                if button.text == "Toggle Video":
+                    button.Toggle = not button.Toggle
+                else:
+                    button.Toggle = not button.Toggle
 
     def _draw_camera(self, surface):
-        """Grabs frame from webcam and displays it."""
         ret, frame = camera.read()
-        if ret:
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            frame = np.rot90(frame)
-            frame_surface = pygame.surfarray.make_surface(frame)
-            surface.blit(frame_surface, (0, 0))
+        if ret and not self.buttons[0].Toggle:
+            frame = cv2.flip(frame, 1)  # Mirror the image
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+
+            # Current timestamp in milliseconds
+            timestamp_ms = int(pygame.time.get_ticks())
+
+            landmarker.detect_async(mp_image, timestamp_ms)
+
+            # Display detected gesture from global dictionary
+            gesture_text = FONT.render(f"Gesture: {gesture_result['gesture']}", True, BLACK)
+            frame_surface = pygame.surfarray.make_surface(np.rot90(rgb_frame))
+            surface.blit(frame_surface, (75, 150)) if self.buttons[1].Toggle else None
+            surface.blit(gesture_text, (WIDTH - 250,50))
+        else:
+
+            matrix = self.ai.transition_matrix
+
+            fig, axes = plt.subplots(3, 3, figsize=(12, 9))
+
+            moves = ['Rock', 'Paper', 'Scissors']
+
+            for i in range(3):
+                for j in range(3):
+                    data = matrix[i, j].copy()
+                    data[:2],data[2] = data[1:],data[0]
+                    normalized_data = data 
+                    axes[i, j].bar(moves, normalized_data, color=[plt.cm.viridis(x/np.max(matrix)) for x in normalized_data])
+                    axes[i, j].set_ylim(0, np.max(data) +1)
+                    axes[i, j].set_title(f'Sequence: {moves[i]} → {moves[j]}', fontsize=14, fontweight='bold')
+                    axes[i, j].set_ylabel('Probability')
+
+            plt.suptitle('How you think.', fontsize=20, fontweight='bold')
+            plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+
+            buf = io.BytesIO()
+            plt.savefig(buf, format='png', bbox_inches='tight')
+            plt.close(fig)
+            buf.seek(0)
+
+            img = pygame.image.load(buf, 'buffer')
+            img = pygame.transform.scale(img, (1000, 550))
+            surface.blit(img, ((WIDTH - 1000) // 2, (HEIGHT - 550) // 2))
+
 
     def _draw_buttons(self, surface):
         for button in self.buttons:
@@ -171,55 +275,23 @@ class Game:
             self.ai_score += 1
             return "AI Wins!"
 
-# mp_hands = mp.solutions.hands
-# hands = mp_hands.Hands(static_image_mode=False, max_num_hands=1)
-# mp_draw = mp.solutions.drawing_utils
-
-def get_finger_states(hand_landmarks):
-    tips = [4, 8, 12, 16, 20]
-    pip_joints = [2, 6, 10, 14, 18]
-    finger_states = []
-
-    # Thumb: special case (check x instead of y)
-    if hand_landmarks.landmark[tips[0]].x < hand_landmarks.landmark[pip_joints[0]].x:
-        finger_states.append(1)
-    else:
-        finger_states.append(0)
-
-    # Other fingers: tip higher than joint → extended
-    for i in range(1, 5):
-        tip = hand_landmarks.landmark[tips[i]]
-        pip = hand_landmarks.landmark[pip_joints[i]]
-        finger_states.append(1 if tip.y < pip.y else 0)
-
-    return finger_states
-
-def classify_hand_gesture(finger_states):
-    if finger_states == [0, 0, 0, 0, 0]:
-        return "Rock"
-    elif finger_states == [1, 1, 1, 1, 1]:
-        return "Paper"
-    elif finger_states[1] and finger_states[2] and not any(finger_states[3:]):
-        return "Scissors"
-    else:
-        return "Unknown"
-
 
 def main():
-    game = Game()
-    print('RUNNING')
-    while True:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                camera.release()
-                pygame.quit()
-                sys.exit()
-            elif event.type == pygame.MOUSEBUTTONDOWN:
-                game.handle_click(event.pos)
+    
+        game = Game()
+        print('RUNNING')
+        while True:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    camera.release()
+                    pygame.quit()
+                    sys.exit()
+                elif event.type == pygame.MOUSEBUTTONDOWN:
+                    game.handle_click(event.pos)
 
-        game.update(screen)
-        pygame.display.flip()
-        clock.tick(60)
+            game.update(screen)
+            pygame.display.flip()
+            clock.tick(60)
 
 if __name__ == "__main__":
     print('RUNNING')
