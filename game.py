@@ -115,7 +115,7 @@ class AI:
         # update the transition matrix
         if len(self.history) > 2:
             self.transition_matrix[self.history[-3],self.history[-2],(self.history[-1]+1)%3] += 1
-            print(self.transition_matrix)
+            # print(self.transition_matrix)
         #TRAIN
    
 
@@ -133,6 +133,10 @@ class Game:
             Button(900, 650, "Toggle Video")
         ]
         self.buttons[1].Toggle = True
+        self.animation_start = None
+        self.emoji_map = {"Rock": "✊", "Paper": "🖐️", "Scissors": "✌️", "VS": "⚡"}
+        self.animation_result = None
+
 
         # Countdown settings
         self.countdown_active = True
@@ -142,15 +146,39 @@ class Game:
     def update(self, surface):
         """Main drawing function for a game frame."""
         surface.fill(WHITE)
-        self._draw_camera(surface)
         self._draw_buttons(surface)
-        
-        self._draw_result_rect(surface) if not self.buttons[0].Toggle else None
-        if self.countdown_active and not self.buttons[0].Toggle:
+        self._draw_camera(surface)
+        if self.buttons[0].Toggle:
+            return
+        self._draw_result_rect(surface)
+        if self.countdown_active:
             self._draw_countdown(surface)
-        if self.countdown_active == False and gesture_result["gesture"] != "Unknown" and not self.buttons[0].Toggle:
-            self._play_round(gesture_result["gesture"])
-            gesture_result["gesture"] = "Unknown"
+        elif self.animation_start == None:
+            ret, frame = camera.read()
+            if ret and not self.buttons[0].Toggle:
+                frame = cv2.flip(frame, 1)  # Mirror the image
+                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+             
+                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+
+                # Current timestamp in milliseconds
+                timestamp_ms = int(pygame.time.get_ticks())
+
+                landmarker.detect_async(mp_image, timestamp_ms)
+                pygame.time.delay(50)
+                # Display detected gesture from global dictionary
+                gesture_text = FONT.render(f"Gesture: {gesture_result['gesture']}", True, BLACK)
+                print(f"Detected gesture: {gesture_result['gesture']}")
+                surface.blit(gesture_text, (WIDTH - 250,50))
+
+                if gesture_result["gesture"] != "Unknown":
+                    self._play_round(gesture_result["gesture"])
+            
+        
+        
+        self.draw_emoji_animation(surface)
+
+
         
             
 
@@ -168,18 +196,8 @@ class Game:
         if ret and not self.buttons[0].Toggle:
             frame = cv2.flip(frame, 1)  # Mirror the image
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
-
-            # Current timestamp in milliseconds
-            timestamp_ms = int(pygame.time.get_ticks())
-
-            landmarker.detect_async(mp_image, timestamp_ms)
-
-            # Display detected gesture from global dictionary
-            gesture_text = FONT.render(f"Gesture: {gesture_result['gesture']}", True, BLACK)
             frame_surface = pygame.surfarray.make_surface(np.rot90(rgb_frame))
             surface.blit(frame_surface, (75, 150)) if self.buttons[1].Toggle else None
-            surface.blit(gesture_text, (WIDTH - 250,50))
         else:
 
             matrix = self.ai.transition_matrix
@@ -251,13 +269,65 @@ class Game:
         )
 
     def _play_round(self, player_move):
+        print(f"Player move: {player_move}")
+        gesture_result["gesture"] = "Unknown"
         ai_move = self.ai.get_move()
         result = self._determine_winner(player_move, ai_move)
         self.ai.update_history(MOVES.index(player_move))
 
-        self.result_text = f"You: {player_move} | AI: {ai_move} → {result}"
-        self.countdown_start = pygame.time.get_ticks()
-        self.countdown_active = True
+        self.animation_result = {
+            "player": player_move,
+            "ai": ai_move,
+            "winner": result
+        }
+        self.animation_start = pygame.time.get_ticks()
+
+
+    def draw_emoji_animation(self, surface):
+        if not self.animation_start:
+            return
+
+        elapsed = pygame.time.get_ticks() - self.animation_start
+        duration = 2000
+
+        if elapsed > duration:
+            self.animation_start = None
+            self.result_text = f"You: {self.animation_result['player']} | AI: {self.animation_result['ai']} → {self.animation_result['winner']}"
+
+            # Start countdown now
+            self.countdown_start = pygame.time.get_ticks()
+            self.countdown_active = True
+            return
+
+        center_y = HEIGHT // 2
+        base_x = WIDTH // 2
+        spacing = 120
+        font = pygame.font.SysFont("Segoe UI Emoji", 100)
+
+        player_emoji = self.emoji_map[self.animation_result['player']]
+        vs_emoji = self.emoji_map["VS"]
+        ai_emoji = self.emoji_map[self.animation_result['ai']]
+
+        if elapsed < 1000:
+            offset = int((1 - elapsed / 1000) * 300)
+            player_pos = (base_x - spacing * 2 - offset, center_y)
+            vs_pos = (base_x, center_y - offset*0.5625)
+            ai_pos = (base_x + spacing * 2 + offset, center_y)
+        else:
+            compress = int(((elapsed - 1000) / 1000) * spacing)
+            player_pos = (base_x - compress, center_y)
+            vs_pos = (base_x, center_y)
+            ai_pos = (base_x + compress, center_y)
+
+        surface.blit(font.render(player_emoji, True, BLACK), font.render(player_emoji, True, BLACK).get_rect(center=player_pos))
+        surface.blit(font.render(vs_emoji, True, BLACK), font.render(vs_emoji, True, BLACK).get_rect(center=vs_pos))
+        surface.blit(font.render(ai_emoji, True, BLACK), font.render(ai_emoji, True, BLACK).get_rect(center=ai_pos))
+
+        if elapsed > 1500:
+            result_font = pygame.font.SysFont("Arial", 50, bold=True)
+            result = self.animation_result["winner"]
+            result_surf = result_font.render(result, True, (255, 50, 50))
+            surface.blit(result_surf, result_surf.get_rect(center=(WIDTH // 2, center_y - 120)))
 
     def _determine_winner(self, player, ai):
         """Game rules: determines outcome and updates score."""
@@ -280,6 +350,8 @@ def main():
     
         game = Game()
         print('RUNNING')
+        game.countdown_start = pygame.time.get_ticks()
+        game.countdown_active = True
         while True:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
